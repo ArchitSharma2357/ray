@@ -1,0 +1,1151 @@
+RAYCISM ENGINE (ORION RAYTRACER)
+BEGINNER-FIRST FULL PROJECT GUIDE
+=================================
+
+Purpose of this document
+------------------------
+This guide assumes you are a beginner.
+It starts from the basics and gradually explains the whole project.
+By the end, you should know:
+1. What this project does.
+2. How light rendering works at a conceptual level.
+3. How the codebase is organized.
+4. What each important file is responsible for.
+5. How a render request moves through the system.
+
+
+How to use this guide
+---------------------
+If you are presenting to people, read in this order:
+1. Section 1 to 4 for fundamentals.
+2. Section 5 to 8 for architecture and code map.
+3. Section 9 to 14 for rendering internals.
+4. Section 15 to 18 for web/frontend/runtime details.
+5. Section 19 onward for performance, Q&A, and cheat sheets.
+
+
+Section 1 - Start From Zero: What Is This Project?
+===================================================
+
+Short answer:
+Raycism Engine is a physically-based path tracer.
+
+Long beginner answer:
+- A path tracer is a program that creates images by simulating how light travels.
+- Instead of drawing simple shapes directly (like many real-time engines),
+  it simulates light rays bouncing around a scene.
+- This can produce realistic reflections, refractions, soft shadows, and global illumination.
+
+This project contains:
+1. A C++ rendering core (the main engine).
+2. Optional CUDA GPU rendering path (for NVIDIA GPUs).
+3. A native interactive app (`orion_studio`) using GLFW/OpenGL.
+4. A web UI and Python backend that control rendering.
+
+
+Section 2 - Basic Vocabulary (Important)
+========================================
+
+If someone asks you technical questions, these terms matter.
+
+1. Pixel
+- One tiny square in the final image.
+
+2. Ray
+- A mathematical line with origin + direction.
+- In code: `P(t) = origin + t * direction`.
+
+3. Sample
+- One random ray path contribution for a pixel.
+- More samples = lower noise.
+
+4. Bounce
+- One surface interaction of a ray.
+- Rays can bounce multiple times.
+
+5. Material
+- Rules for how light behaves on a surface.
+- Diffuse, metal, glass, emissive, coated.
+
+6. Radiance
+- Light energy traveling in a direction.
+
+7. Throughput
+- Running multiplier of energy after each bounce.
+
+8. Monte Carlo
+- Randomized numerical method used to estimate light integrals.
+
+9. BVH (Bounding Volume Hierarchy)
+- Acceleration structure that reduces intersection tests.
+
+10. Tone Mapping
+- Converts HDR values to displayable range.
+
+11. Gamma Correction
+- Converts linear light to monitor-friendly brightness response.
+
+
+Section 3 - Big-Picture Architecture
+====================================
+
+Think of the project as 3 layers:
+
+Layer A: Rendering core (C++)
+- Responsible for all image generation physics/math.
+- Files under `src/`.
+
+Layer B: Orchestration (Python)
+- Starts/stops renders, exposes HTTP API, manages live loop.
+- File: `scripts/orion_frontend.py`.
+
+Layer C: User interface (HTML/CSS/JS)
+- Browser controls for scene editing and rendering.
+- File: `frontend/index.html`.
+
+
+Section 4 - What Happens When You Click "Run"?
+================================================
+
+If using web UI:
+1. Browser builds a JSON payload.
+2. Browser sends `POST /api/run` to Python backend.
+3. Python backend validates settings and starts `orion_raytracer` process.
+4. C++ renderer parses CLI arguments.
+5. C++ renderer builds scene + camera.
+6. Renderer runs CPU or GPU path tracing.
+7. Final image is written to `out/`.
+8. Backend exposes output file; frontend displays preview.
+
+If using CLI directly:
+1. You run `build/orion_raytracer --flags...`.
+2. Everything happens in one C++ process.
+
+
+Section 5 - Repository Map (What Is In Each Folder)
+====================================================
+
+Root files:
+- `CMakeLists.txt`
+  Build configuration and optional CUDA/GLFW detection.
+- `README.md`
+  User-level documentation.
+- `config.json`
+  Web host/port/default options.
+- `requirements.txt`
+  Python dependencies (Pillow).
+
+Folders:
+- `src/`
+  All C++ rendering engine code.
+- `scripts/`
+  Python tools and backend server.
+- `frontend/`
+  Web app UI code.
+- `out/`
+  Render outputs and imported assets.
+- `build/`
+  CMake build output binaries.
+
+
+Section 6 - Build and Run (Beginner Workflow)
+==============================================
+
+Option A: Portable script (simplest)
+1. Install/build:
+   `python scripts/orion_portable.py install`
+2. Run web app:
+   `python scripts/orion_portable.py run`
+3. Open browser:
+   `http://127.0.0.1:8092`
+
+Option B: Manual CMake
+1. Configure:
+   `cmake -S . -B build`
+2. Build:
+   `cmake --build build -j`
+3. Run CLI:
+   `./build/orion_raytracer`
+
+Important runtime binaries:
+- `build/orion_raytracer` (CLI renderer)
+- `build/orion_studio` (interactive native viewer; only if GLFW found)
+
+
+Section 7 - CMake and Build System Deep Dive
+=============================================
+
+Primary file:
+- `CMakeLists.txt`
+
+Key behavior:
+1. Sets C++20.
+2. Checks CUDA compiler:
+   - If found, `ORION_HAS_CUDA=1` and GPU source `src/render/gpu_renderer.cu` is included.
+   - If not found, project still builds CPU-only.
+3. Finds OpenGL and optionally GLFW.
+4. Builds:
+   - `orion_raytracer` always.
+   - `orion_studio` only if GLFW is available.
+
+This design makes the project robust:
+- CPU mode always available.
+- GPU mode optional.
+
+
+Section 8 - Full Code Inventory: What Each Core File Does
+==========================================================
+
+8.1 Entry points
+----------------
+- `src/main.cpp`
+  CLI app entry. Parses arguments, chooses backend, builds scene, renders image.
+- `src/studio/studio_main.cpp`
+  Native interactive app with real-time camera control and progressive refinement.
+
+8.2 Core math and utilities
+---------------------------
+- `src/math/vec3.h`
+  3D vector class and operations (`dot`, `cross`, `normalize`, `reflect`, `refract`).
+- `src/core/ray.h`
+  Ray representation (`origin`, `direction`, `at(t)`).
+- `src/core/random.h`
+  Random number generator, random vectors, unit sphere/disk sampling.
+
+8.3 Rendering components
+------------------------
+- `src/render/camera.h`
+  Thin-lens camera model, generates rays per pixel sample.
+- `src/render/renderer.h`
+  CPU path tracer (multithreaded).
+- `src/render/image.h`
+  Image buffer and file output (PPM), tone mapping, gamma correction.
+
+8.4 GPU-specific rendering
+--------------------------
+- `src/render/gpu_scene.h`
+  Plain GPU data structs (materials, spheres, triangles, textures, camera).
+- `src/scene/gpu_scene_builder.h`
+  Packs high-level scene into `GpuSceneData` arrays.
+- `src/render/gpu_renderer.h`
+  GPU backend API and compile-time CUDA availability helpers.
+- `src/render/gpu_renderer.cu`
+  CUDA kernel implementation and host-device memory orchestration.
+
+8.5 Scene and geometry
+----------------------
+- `src/scene/hit.h`
+  Hit record structure.
+- `src/scene/hittable.h`
+  Base interface for hittable objects + object list container.
+- `src/scene/sphere.h`
+  Sphere intersection logic.
+- `src/scene/triangle.h`
+  Triangle intersection logic with optional UV interpolation.
+- `src/scene/aabb.h`
+  Axis-aligned bounding box intersection.
+- `src/scene/bvh.h`
+  BVH acceleration tree.
+- `src/scene/scene_builder.h`
+  Scene-editor parsing, default scene, OBJ/MTL import, material mapping, camera presets.
+
+8.6 Materials
+-------------
+- `src/material/material.h`
+  Material base + Lambertian, Metal, Dielectric, Emissive, CoatedDiffuse, SceneMeshMaterial.
+
+8.7 Web and portability
+-----------------------
+- `scripts/orion_frontend.py`
+  HTTP backend API, render process manager, live loop, previews, telemetry.
+- `frontend/index.html`
+  Full web frontend (layout + logic + interactions + API calls).
+- `scripts/orion_portable.py`
+  Installer/runner wrapper around build + server startup.
+
+
+Section 9 - CLI Renderer Flow (`src/main.cpp`) Step by Step
+============================================================
+
+What `main.cpp` does in order:
+
+1. Declare default render settings
+- Width/height, samples, depth, threads, seed, exposure.
+
+2. Parse command-line flags
+- `--width`, `--height`, `--samples`, `--depth`, `--threads`, `--seed`, `--exposure`
+- `--backend auto|cpu|gpu`
+- `--demo`, `--scene-spec`, `--obj-path`
+- camera overrides for scene editor (`--camera-pos`, `--camera-yaw`, etc.)
+
+3. Validate values
+- Ensures dimensions and sample/depth values are valid.
+
+4. Determine backend
+- `cpu`, `gpu`, or `auto`.
+- In auto mode: GPU if compiled and compatible, else CPU.
+
+5. Build scene
+- GPU path: `makeGpuSceneForDemo(...)`.
+- CPU path: `makeDemoScene(...)`.
+
+6. Render
+- GPU: `renderWithGpu(...)`.
+- CPU: `Renderer renderer(settings); renderer.render(...)`.
+
+7. Write output
+- `image.writePPM(...)` with tone mapping and gamma.
+
+8. Print time and status
+- Reports elapsed milliseconds and output path.
+
+
+Section 10 - Data Structures Every Beginner Should Understand
+==============================================================
+
+10.1 `Vec3`
+-----------
+In `src/math/vec3.h`:
+- Stores x,y,z values.
+- Supports math operations.
+- Used for:
+  - points (3D positions)
+  - directions
+  - colors (RGB)
+
+Aliases:
+- `Point3` = `Vec3`
+- `Color` = `Vec3`
+
+Why this matters:
+- Most renderer logic is vector math.
+
+10.2 `Ray`
+----------
+In `src/core/ray.h`:
+- `origin` + `direction`.
+- `at(t)` gives a point along the ray.
+
+Why this matters:
+- Entire path tracing process starts with rays from camera.
+
+10.3 `HitRecord`
+----------------
+In `src/scene/hit.h`:
+- Stores nearest hit information:
+  - hit point
+  - normal
+  - material pointer
+  - UV
+  - t distance
+  - front/back face info
+
+Why this matters:
+- Materials need this info to decide how rays bounce.
+
+10.4 `RenderSettings`
+---------------------
+In `src/render/renderer.h`:
+- Width/height, samples per pixel, max depth, threads, seed, exposure.
+
+
+Section 11 - Geometry Intersections (Physics/Math Foundation)
+==============================================================
+
+11.1 Sphere hit
+---------------
+File: `src/scene/sphere.h`
+
+Math idea:
+- Solve where ray equation intersects sphere equation.
+- Quadratic formula gives possible hit distances (`t` roots).
+- Pick nearest valid root in [tMin, tMax].
+
+Additional detail:
+- Computes spherical UV coordinates from surface normal.
+
+11.2 Triangle hit
+-----------------
+File: `src/scene/triangle.h`
+
+Method:
+- Moller-Trumbore algorithm.
+- Uses barycentric coordinates u/v/w.
+- Valid hit if inside triangle and t range is valid.
+
+If UV exists:
+- Interpolates triangle UV with barycentric weights.
+
+11.3 Why `tMin = 0.001`?
+------------------------
+To avoid self-intersections where a new scattered ray immediately hits the same surface
+because of floating-point precision (called acne artifacts).
+
+
+Section 12 - Materials and Light Behavior
+=========================================
+
+Material system is in `src/material/material.h`.
+
+Core interface:
+- `scatter(...)`:
+  decides if and how ray continues.
+- `emitted()`:
+  returns emitted light (for light sources).
+
+12.1 Lambertian (diffuse)
+-------------------------
+- Randomly scatters around normal direction.
+- Simulates matte surfaces.
+
+12.2 Metal
+----------
+- Perfect reflection + fuzz perturbation.
+- Higher fuzz = blurrier reflections.
+
+12.3 Dielectric (glass)
+-----------------------
+- May reflect or refract depending on angle and IOR.
+- Uses Schlick approximation for reflectance probability.
+
+12.4 Emissive
+-------------
+- Surface itself emits light.
+- No further scatter.
+
+12.5 CoatedDiffuse
+------------------
+- Mixture model:
+  - glossy coat branch
+  - diffuse branch
+
+12.6 SceneMeshMaterial
+----------------------
+- Parameter-driven material for imported mesh triangles.
+- Supports texture sampling and multiple behavior types.
+
+
+Section 13 - Camera Model and Depth of Field
+=============================================
+
+File: `src/render/camera.h`
+
+Camera construction:
+1. Build basis vectors (u,v,w) from lookFrom/lookAt/vUp.
+2. Compute viewport dimensions from FOV + aspect ratio.
+3. Build lower-left corner and horizontal/vertical spans.
+
+Ray sampling:
+- `sampleRay(s,t,rng)`:
+  - uses random lens disk offset (aperture)
+  - returns ray through viewport point
+
+Meaning of camera controls:
+- FOV: zoom/wide-angle feel.
+- Aperture: depth-of-field blur strength.
+- Focus distance: distance that appears sharp.
+
+
+Section 14 - CPU Path Tracer (`src/render/renderer.h`) Deep Walkthrough
+========================================================================
+
+14.1 Threading model
+--------------------
+- Uses `settings.threadCount` worker threads.
+- Shared atomic row counter for dynamic scheduling.
+
+14.2 Pixel sampling
+-------------------
+For each pixel:
+1. Derive deterministic pixel seed.
+2. For each sample:
+   - jitter subpixel position
+   - sample camera ray
+   - trace path
+3. Accumulate color in linear space.
+
+14.3 Path tracing loop (`trace`)
+--------------------------------
+Pseudo-flow:
+1. `throughput = (1,1,1)`
+2. `radiance = (0,0,0)`
+3. For bounce in [0..maxDepth):
+   - Intersect world
+   - If no hit: add sky contribution and stop
+   - Add emission from hit material
+   - Ask material to scatter
+   - If no scatter: stop
+   - Multiply throughput by attenuation
+   - Optional Russian roulette after a few bounces
+4. Return radiance
+
+14.4 Sky model
+--------------
+- Blue-white gradient based on ray direction y.
+- Adds sharp procedural sun highlight.
+
+14.5 Russian roulette
+---------------------
+- After bounce > 3:
+  - compute survival probability from throughput
+  - randomly terminate low-contribution paths
+  - divide by survival when continuing (keeps estimator unbiased)
+
+
+Section 15 - Image Pipeline (`src/render/image.h`)
+===================================================
+
+Image storage:
+- Floating RGB accumulation per pixel.
+
+When writing output:
+1. Divide by sample count.
+2. Multiply by exposure.
+3. ACES-like tone map.
+4. Gamma correction (2.2).
+5. Clamp and quantize to 8-bit.
+6. Save as binary PPM (`P6`).
+
+Why not write raw linear values?
+- Monitors expect nonlinear display values.
+- HDR values must be compressed into [0..1] first.
+
+
+Section 16 - Acceleration Structures: AABB + BVH
+=================================================
+
+16.1 AABB (`src/scene/aabb.h`)
+-------------------------------
+- Fast box-ray overlap test using slab method.
+
+16.2 BVH (`src/scene/bvh.h`)
+----------------------------
+- Splits object list recursively along random axis by centroid.
+- Each node has bounding box + left/right children.
+
+Traversal logic:
+1. If ray misses node box -> skip entire subtree.
+2. Otherwise test children.
+3. Keep closest hit.
+
+Why BVH matters:
+- Huge speedup vs checking every primitive every time.
+
+
+Section 17 - Scene Builder (`src/scene/scene_builder.h`) Explained
+===================================================================
+
+This is one of the most important files.
+
+What it does:
+1. Defines scene editor primitive format.
+2. Parses scene spec string.
+3. Builds geometry from primitives.
+4. Imports OBJ/MTL and maps to engine materials.
+5. Builds final CPU world and BVH.
+6. Creates camera settings and applies camera overrides.
+
+17.1 Current demo behavior
+--------------------------
+Important for presentation accuracy:
+- Default demo is `scene_editor`.
+- `supportedDemoNames()` currently returns scene_editor only.
+- CLI/web path uses scene editor pipeline.
+
+Note:
+- Showcase world helper functions still exist and are used by `orion_studio`.
+
+17.2 Scene spec format
+----------------------
+Object token format:
+`type|name|pos|rot|scale|material|color`
+
+Examples:
+- type: `sphere`, `cube`, `plane`, `light`
+- pos/rot/scale: `x,y,z`
+- color: `r,g,b` in [0,1]
+
+17.3 Primitive conversion
+-------------------------
+- Sphere primitive -> sphere geometry.
+- Cube primitive -> 12 triangles.
+- Plane primitive -> 2 triangles.
+- Light primitive -> emissive sphere.
+
+17.4 Fallback light
+-------------------
+- If scene has no explicit light, file adds one emissive sphere automatically.
+
+
+Section 18 - OBJ/MTL Import Pipeline (Detailed)
+================================================
+
+Also in `src/scene/scene_builder.h`.
+
+18.1 Safety and limits
+----------------------
+- Validates file exists and is regular file.
+- Maximum OBJ size for interactive use (about 48 MB).
+- Triangle count cap for sanity.
+
+18.2 Parsing OBJ
+----------------
+Reads:
+- `v` vertex positions
+- `vt` texture coordinates
+- `f` faces
+- `usemtl` and `mtllib`
+
+Faces can have more than 3 vertices:
+- triangulated by fan method.
+
+18.3 Parsing MTL
+----------------
+Reads common fields:
+- Kd diffuse color
+- Ks specular color
+- Ke emission
+- Ns shininess
+- d/Tr opacity
+- Ni IOR
+- illum model
+- map_Kd / map_Ke texture paths
+
+18.4 Normalization transform
+----------------------------
+After loading vertices:
+- compute mesh bounding box
+- scale mesh to manageable size
+- center it
+- offset to sit in scene
+
+18.5 Material inference
+-----------------------
+The importer infers engine material type from MTL traits:
+- emissive if Ke strong
+- dielectric if transparent rules
+- metal if strong specular
+- coated for medium specular
+- else lambertian
+
+18.6 Texture support
+--------------------
+- C++ texture loader supports PPM textures.
+- Python import pipeline can convert textures to PPM for compatibility.
+
+
+Section 19 - GPU Scene Packing (`src/scene/gpu_scene_builder.h`)
+=================================================================
+
+Purpose:
+Convert scene data into plain arrays for CUDA.
+
+Why packing is needed:
+- GPU kernel needs contiguous simple structs, not C++ polymorphic objects.
+
+Main packed arrays:
+- materials
+- spheres
+- triangles
+- textures
+- texture texels
+- camera data
+
+Also handles:
+- primitive scene editor conversion
+- OBJ triangle addition
+- texture index caching
+- fallback light insertion
+
+
+Section 20 - CUDA Renderer (`src/render/gpu_renderer.cu`) Deep Walkthrough
+============================================================================
+
+20.1 Device math
+----------------
+Defines `DeviceVec3`, `DeviceRay`, helper operators, reflect/refract functions,
+random generator (`xorshift32`), and sampling helpers.
+
+20.2 Device hit routines
+------------------------
+- `hitSphere(...)`
+- `hitTriangle(...)`
+
+20.3 Main kernel
+----------------
+Kernel: `accumulateSampleKernel(...)`
+
+Per thread (pixel):
+1. Generate random jitter and camera ray.
+2. Path trace for `maxDepth` bounces.
+3. Loop over all spheres and triangles to find closest hit.
+4. Apply material behavior.
+5. Add sky/emission contributions.
+6. Russian roulette for deep bounces.
+7. Accumulate radiance into output buffer.
+
+20.4 Host-side function
+-----------------------
+`renderWithGpu(...)`:
+1. Validate scene/settings.
+2. Allocate device memory.
+3. Copy scene data H2D.
+4. Launch kernel once per sample.
+5. Sync and check errors.
+6. Copy accumulation D2H.
+7. Convert to `Image`.
+8. Free resources.
+
+20.5 Important caveat
+---------------------
+Current kernel uses linear primitive loops (no GPU BVH traversal yet).
+So GPU scaling depends heavily on primitive count.
+
+
+Section 21 - Native Interactive App (`src/studio/studio_main.cpp`)
+===================================================================
+
+This binary provides real-time navigation + progressive preview.
+
+21.1 Architecture
+-----------------
+- Main thread:
+  - window/events/UI drawing
+  - handles camera controls
+- Worker thread:
+  - repeatedly renders batches
+  - accumulates samples
+
+21.2 Quality strategy
+---------------------
+- Camera moving:
+  - low spp and low depth for responsiveness
+- Camera still:
+  - higher spp/depth for refinement
+
+21.3 Shared state
+-----------------
+`SharedPreviewState` contains camera settings revisions, render settings,
+latest RGB buffer, backend status, accumulated sample count.
+
+21.4 UI interactions
+--------------------
+- RMB drag to look
+- WASD + Q/E move
+- Shift speed boost
+- Panel controls for exposure/spp/depth/backend/FOV/focus/aperture/etc.
+
+
+Section 22 - Web Backend (`scripts/orion_frontend.py`) Full Breakdown
+======================================================================
+
+This file is the control server for browser mode.
+
+22.1 Main responsibilities
+--------------------------
+1. Serve HTTP endpoints.
+2. Start/stop renderer subprocesses.
+3. Manage render mode and live mode.
+4. Track scene/camera/runtime state.
+5. Handle OBJ import and texture postprocess.
+6. Convert previews for browser compatibility.
+7. Publish telemetry and GPU probe info.
+
+22.2 Central state class
+------------------------
+Dataclass: `OrionFrontendState`
+
+Stores:
+- process/thread handles
+- running mode
+- live settings
+- scene spec and obj path
+- camera pose
+- logs and last outputs
+- caches and telemetry
+
+22.3 Render mode (`MODE_RENDER`)
+--------------------------------
+- Runs one subprocess with chosen settings.
+- Waits for completion.
+- Updates outputs/status.
+
+22.4 Live mode (`MODE_LIVE`)
+----------------------------
+- Loops indefinitely until stop.
+- On each frame:
+  - builds command
+  - runs renderer
+  - loads frame image
+  - blends into accumulation (if still scene)
+- On movement/scene change:
+  - resets accumulation
+
+22.5 Runtime update events
+--------------------------
+- `movement_event`:
+  triggered when camera/scene moves.
+- `live_settings_event`:
+  triggered when live settings require reset.
+
+22.6 Preview and output behavior
+--------------------------------
+- `GET /output/...` for files.
+- PPM converted to PNG/BMP for browser display.
+- Cache keyed by file metadata.
+
+22.7 Security/safety checks
+---------------------------
+- Output path restricted to `out/`.
+- OBJ path restricted to `out/imports/`.
+- Path traversal and unsafe absolute paths rejected.
+- Import size limits enforced.
+
+22.8 Telemetry and GPU probe
+----------------------------
+- CPU and memory metrics from OS.
+- GPU metrics via `nvidia-smi` when available.
+- GPU probe endpoint runs tiny test render using `--backend gpu`.
+
+
+Section 23 - Web Frontend (`frontend/index.html`) Full Breakdown
+=================================================================
+
+Single-page app containing HTML/CSS/JavaScript.
+
+23.1 Core UI roles
+------------------
+- Build payload from sliders/inputs.
+- Trigger start/stop actions.
+- Show status, logs, outputs, and preview.
+- Edit scene primitives interactively.
+- Control camera for live scene navigation.
+
+23.2 Scene editor logic
+-----------------------
+- Maintains local list of objects.
+- Encodes objects into `scene_spec` format.
+- Sends updates to backend (`/api/scene`).
+- Supports add/duplicate/delete/reset operations.
+
+23.3 Camera sync logic
+----------------------
+- Tracks camera pose in frontend state.
+- Sends `/api/camera` updates at high cadence when dirty.
+- Debounces with minimal sync interval.
+
+23.4 Build payload
+------------------
+`buildPayload()` includes:
+- mode (render/live)
+- width/height/threads/seed/backend
+- scene/editor data
+- camera pose
+- render or live-specific sampling/depth/output settings
+
+23.5 Status polling
+-------------------
+- Polls `/api/status` periodically.
+- Poll interval adapts based on running state and interaction activity.
+
+23.6 Preview flow
+-----------------
+- Chooses latest/selected output.
+- Loads preview image.
+- Uses BMP fallback route for PPM browser compatibility.
+
+
+Section 24 - Portable Installer/Runner (`scripts/orion_portable.py`)
+======================================================================
+
+Main goals:
+- Hide setup complexity.
+- Make install/run consistent across platforms.
+
+Install flow:
+1. Check Python version.
+2. Ensure build tools exist.
+3. Install pip requirements (optional skip).
+4. Configure/build with CMake.
+5. Create required directories and env helper files.
+
+Run flow:
+1. Load config host/port.
+2. Ensure port is free.
+3. Ensure binary exists (build if needed).
+4. Start backend script.
+5. Optionally open browser.
+
+
+Section 25 - Physics Foundations for Presentation
+==================================================
+
+25.1 What equation are we approximating?
+----------------------------------------
+Path tracing approximates the rendering equation:
+- outgoing light at a point equals emitted light plus reflected incoming light integral.
+
+You do not need to derive full equation in presentation.
+Use this simple line:
+"The renderer estimates total light arriving at camera by averaging many random light paths."
+
+25.2 Why random sampling works
+------------------------------
+- Integrals over many light directions are hard analytically.
+- Monte Carlo uses random samples to estimate average.
+- Estimator converges as sample count grows.
+
+25.3 Reflection and refraction
+------------------------------
+- Reflection follows mirror law via vector math.
+- Refraction follows Snell-type behavior and IOR ratio.
+- Dielectric chooses reflection vs refraction with Fresnel approximation.
+
+25.4 Energy tracking
+--------------------
+- `throughput` stores remaining energy after each bounce.
+- `radiance` accumulates emitted/sky contributions.
+
+25.5 Why Russian roulette is correct
+------------------------------------
+- Terminating some paths randomly reduces work.
+- Surviving paths are reweighted by probability.
+- This keeps expected value unbiased.
+
+25.6 Why images are noisy
+-------------------------
+- Finite random samples produce variance.
+- More samples reduce variance slowly: about 1/sqrt(N).
+
+
+Section 26 - Current Behavior Notes You Should State Honestly
+=============================================================
+
+1. Demo routing:
+- Current CLI/web path is focused on `scene_editor`.
+- Legacy showcase helper functions still exist.
+
+2. GPU acceleration status:
+- CUDA backend is optional at build time.
+- GPU path currently loops linearly through primitives in kernel.
+
+3. Texture format support:
+- Engine-side import path strongly supports PPM textures.
+- Python importer assists by converting other formats when Pillow available.
+
+
+Section 27 - Performance Tuning Guide (Beginner)
+=================================================
+
+If render is too slow, adjust in this order:
+1. Lower resolution.
+2. Lower samples.
+3. Lower max depth.
+4. Use GPU backend if available.
+5. In live mode, reduce preview scale and preview samples.
+
+Rule-of-thumb impacts:
+- Doubling width and height -> ~4x pixels.
+- Doubling samples -> ~2x time.
+- Increasing depth increases path work per sample.
+
+
+Section 28 - How to Explain CPU vs GPU in Simple Words
+=======================================================
+
+CPU mode:
+- Good general compatibility.
+- Uses BVH for acceleration.
+- Multithreaded across CPU cores.
+
+GPU mode:
+- Can process many pixels in parallel.
+- Uses CUDA kernel per sample.
+- Good speed potential, but current primitive intersection is linear per bounce.
+
+
+Section 29 - End-to-End Trace Example (Concrete)
+=================================================
+
+Example user action:
+"Start live render in web UI"
+
+Step-by-step:
+1. UI collects controls and scene data.
+2. UI sends `/api/run` with `mode=live`.
+3. Backend validates and stores target live settings.
+4. Backend starts live loop thread.
+5. Live loop repeatedly launches `orion_raytracer` with quiet settings.
+6. Renderer builds scene (scene spec + optional OBJ + camera).
+7. Renderer path traces frame and writes temporary frame image.
+8. Backend loads frame, blends into accumulated image (if still scene), writes output.
+9. UI polling `/api/status` sees new output and updates preview.
+
+
+Section 30 - Scene Editor Spec Example You Can Show
+====================================================
+
+Format:
+`type|name|pos|rot|scale|material|color`
+
+Example with 3 objects:
+`sphere|Sphere_01|0,1,-1.8|0,0,0|1,1,1|coated|0.86,0.86,0.86;`
+`plane|Ground|0,0,0|0,0,0|12,1,12|lambertian|0.42,0.42,0.42;`
+`light|KeyLight|1.9,3.2,1.0|0,0,0|0.5,0.5,0.5|emissive|1,1,1`
+
+This string is parsed by scene builder and converted into actual geometry.
+
+
+Section 31 - Beginner Reading Order for Source Code
+====================================================
+
+Read in this order to learn fastest:
+1. `src/main.cpp`
+2. `src/render/renderer.h`
+3. `src/material/material.h`
+4. `src/scene/hit.h`, `src/scene/hittable.h`
+5. `src/scene/sphere.h`, `src/scene/triangle.h`
+6. `src/scene/bvh.h`, `src/scene/aabb.h`
+7. `src/render/camera.h`, `src/render/image.h`
+8. `src/scene/scene_builder.h`
+9. `src/render/gpu_scene.h`
+10. `src/render/gpu_renderer.cu`
+11. `scripts/orion_frontend.py`
+12. `frontend/index.html`
+
+
+Section 32 - Presentation Script (Beginner-Friendly, 12 Minutes)
+=================================================================
+
+Minute 1-2: Problem and result
+- "This project renders realistic images by simulating light paths."
+
+Minute 3-4: Architecture
+- Explain C++ core + Python backend + web frontend.
+
+Minute 5-7: Rendering pipeline
+- Explain rays, intersections, materials, bounces, accumulation.
+
+Minute 8-9: Physics intuition
+- Monte Carlo sampling, reflection/refraction, Russian roulette.
+
+Minute 10: Scene system
+- scene spec + OBJ import.
+
+Minute 11: CPU/GPU + live mode
+- Backend choice and progressive strategy.
+
+Minute 12: Wrap-up
+- Mention modular design and possible next improvements.
+
+
+Section 33 - High-Probability Questions and Ready Answers
+==========================================================
+
+Q1) Why is this physically-based?
+A1) Materials follow physically-inspired light interaction rules,
+and final radiance is estimated from bounce paths using Monte Carlo integration.
+
+Q2) Why does noise remain at low samples?
+A2) Monte Carlo variance. More samples are needed for convergence.
+
+Q3) What does depth parameter control?
+A3) Maximum number of bounces. Higher depth captures more indirect light but costs more.
+
+Q4) Why can GPU fail and fallback happen?
+A4) CUDA may be unavailable at build/runtime or render may fail; auto mode falls back to CPU.
+
+Q5) What gives biggest performance gains?
+A5) Lower resolution and samples, then choose GPU if available.
+
+Q6) Why BVH?
+A6) It avoids testing every object for every ray by pruning large empty regions quickly.
+
+Q7) Is this real-time?
+A7) Final quality path tracing is not real-time; live mode provides progressive responsiveness.
+
+Q8) Why convert PPM for browser preview?
+A8) Browsers do not natively display PPM, so backend converts to PNG/BMP for compatibility.
+
+Q9) What is easiest code extension?
+A9) Add new material model or new geometry primitive first.
+
+Q10) What is hardest extension?
+A10) Efficient GPU BVH traversal and advanced sampling/denoising are larger engineering tasks.
+
+
+Section 34 - What the Project Is Made Of (Final Summary)
+=========================================================
+
+If someone asks "what is this codebase made of?" answer like this:
+
+"It has three major parts:
+1) C++ ray tracing engine under `src/`:
+   math, geometry, materials, scene builder, CPU and CUDA renderers.
+2) Python orchestration under `scripts/`:
+   HTTP API server, render process manager, live loop, output/telemetry handling.
+3) Browser frontend in `frontend/index.html`:
+   controls, scene editor, camera input, and preview UI.
+
+The render core simulates light with Monte Carlo path tracing,
+while the Python and web layers make it practical to use interactively."
+
+
+Section 35 - Quick Cheat Sheet (File -> Responsibility)
+========================================================
+
+Engine core:
+- `src/main.cpp` -> CLI app flow.
+- `src/render/renderer.h` -> CPU integrator.
+- `src/render/camera.h` -> camera ray generation.
+- `src/render/image.h` -> output/tone map/gamma.
+- `src/material/material.h` -> material behavior.
+- `src/scene/scene_builder.h` -> scene parsing + OBJ pipeline.
+- `src/scene/bvh.h` -> acceleration structure.
+- `src/render/gpu_renderer.cu` -> CUDA rendering kernel.
+
+Interactive/native:
+- `src/studio/studio_main.cpp` -> native live preview app.
+
+Web backend:
+- `scripts/orion_frontend.py` -> API + process control + live orchestration.
+- `scripts/orion_portable.py` -> install/run wrapper.
+
+Web frontend:
+- `frontend/index.html` -> UI and browser-side logic.
+
+
+Section 36 - Practice Tasks (To Really Understand Code)
+========================================================
+
+Task 1: Material experiment
+- Change a sphere material from lambertian to metal.
+- Observe reflection behavior change.
+
+Task 2: Depth experiment
+- Render with depth 2, 6, 16 and compare indirect lighting.
+
+Task 3: Sample experiment
+- Render with samples 4, 32, 256 and compare noise.
+
+Task 4: Camera DoF experiment
+- Increase aperture and adjust focus distance.
+
+Task 5: Scene spec experiment
+- Add one extra light primitive in scene spec and compare exposure/bounce effects.
+
+Task 6: GPU/CPU compare
+- Render same scene on both and compare timing and image consistency.
+
+
+Section 37 - Final Presentation Closing Statement
+=================================================
+
+Use this closing line:
+"This project combines physically-based rendering theory with practical engineering:
+a C++ path-tracing core, optional CUDA acceleration, and both native and web workflows.
+The codebase is modular enough to extend materials, geometry, sampling strategies,
+and performance features as next steps."
+
+
+END OF BEGINNER-FIRST GUIDE
